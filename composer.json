@@ -11,15 +11,9 @@
             "email": "underoathosx@gmail.com"
         }
     ],
-    "repositories": {
-        "px": {
-            "type": "path",
-            "url": "../px"
-        }
-    },
     "require": {
         "php": ">=7.2",
-        "pr0ject-x/px": "dev-master",
+        "pr0ject-x/px": "^1.0.9",
         "lesstif/php-jira-rest-client": "^2.1"
     },
     "require-dev": {
