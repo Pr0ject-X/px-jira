@@ -94,7 +94,7 @@ class JiraCommandType extends PluginTasksBase implements PluginCommandRegisterIn
                     $this->getJiraHarvestProject()
                 ))
                 ->setCondition(function () {
-                    return !$this->hasJiraHarvestAuthDatastoreData();
+                    return $this->hasJiraHarvestAuthDatastoreData();
                 })
             ->end();
     }
