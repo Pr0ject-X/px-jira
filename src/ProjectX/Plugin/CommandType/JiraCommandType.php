@@ -13,11 +13,20 @@ use Pr0jectX\Px\ProjectX\Plugin\PluginConfigurationBuilderInterface;
 use Pr0jectX\Px\ProjectX\Plugin\PluginTasksBase;
 use Pr0jectX\Px\PxApp;
 use Pr0jectX\PxJira\ProjectX\Plugin\CommandType\Commands\JiraCommand;
+use Required\Harvest\Client;
 use Symfony\Component\Console\Question\Question;
 
 class JiraCommandType extends PluginTasksBase implements PluginCommandRegisterInterface, PluginConfigurationBuilderInterface
 {
+    /**
+     * @var string
+     */
     const JIRA_AUTH_FILE = 'jira.auth.json';
+
+    /**
+     * @var string
+     */
+    const JIRA_HARVEST_AUTH_FILE = 'jira.harvest.auth.json';
 
     /**
      * {@inheritDoc}
@@ -55,7 +64,8 @@ class JiraCommandType extends PluginTasksBase implements PluginCommandRegisterIn
             ->setQuestionOutput($this->output())
             ->createNode('cloud-host')
                 ->setValue((new Question(
-                    $this->formatQuestion('Input the Jira cloud domain')
+                    $this->formatQuestionDefault('Input the Jira cloud domain', $this->getJiraHost()),
+                    $this->getJiraHost()
                 ))->setValidator(function ($value) {
                     if (empty($value)) {
                         throw new \RuntimeException(
@@ -67,7 +77,8 @@ class JiraCommandType extends PluginTasksBase implements PluginCommandRegisterIn
             ->end()
             ->createNode('project-key')
                 ->setValue((new Question(
-                    $this->formatQuestion('Input the Jira project key')
+                    $this->formatQuestionDefault('Input the Jira project key', $this->getJiraProjectKey()),
+                    $this->getJiraProjectKey()
                 ))->setValidator(function ($value) {
                     if (empty($value)) {
                         throw new \RuntimeException(
@@ -76,6 +87,15 @@ class JiraCommandType extends PluginTasksBase implements PluginCommandRegisterIn
                     }
                     return $value;
                 }))
+            ->end()
+            ->createNode('harvest-project')
+                ->setValue(new Question(
+                    $this->formatQuestionDefault('Input the Harvest project code', $this->getJiraHarvestProject()),
+                    $this->getJiraHarvestProject()
+                ))
+                ->setCondition(function () {
+                    return !$this->hasJiraHarvestAuthDatastoreData();
+                })
             ->end();
     }
 
@@ -99,6 +119,17 @@ class JiraCommandType extends PluginTasksBase implements PluginCommandRegisterIn
     public function getJiraProjectKey(): string
     {
         return $this->getConfigurations()['project-key'] ?? '';
+    }
+
+    /**
+     * Get the Harvest project key.
+     *
+     * @return string
+     *   The Harvest project key.
+     */
+    public function getJiraHarvestProject(): string
+    {
+        return $this->getConfigurations()['harvest-project'] ?? '';
     }
 
     /**
@@ -148,5 +179,54 @@ class JiraCommandType extends PluginTasksBase implements PluginCommandRegisterIn
             'jiraUser' => $authInfo['username'] ?? null,
             'jiraPassword' => $authInfo['password'] ?? null,
         ]);
+    }
+
+    /**
+     * Get the Jira Harvest authentication datastore.
+     *
+     * @return \Pr0jectX\Px\Datastore\DatastoreFilesystemInterface
+     */
+    public function getJiraHarvestDatastore(): DatastoreFilesystemInterface
+    {
+        return new JsonDatastore(implode(DIRECTORY_SEPARATOR, [
+            PxApp::globalTempDir(),
+            static::JIRA_HARVEST_AUTH_FILE
+        ]));
+    }
+
+    /**
+     * Determine if the Harvest authentication datastore has data.
+     *
+     * @return bool
+     *   Return true if authentication data exist; otherwise false.
+     */
+    public function hasJiraHarvestAuthDatastoreData(): bool
+    {
+        return !empty($this->getJiraHarvestDatastore()->read());
+    }
+
+    /**
+     * Define the Jira Harvest API client.
+     */
+    public function jiraHarvestApiClient(): Client
+    {
+        $datastore = $this->getJiraHarvestDatastore()->read();
+
+        if (
+            !isset($datastore['account-id'])
+            || !isset($datastore['token'])
+        ) {
+            throw new \RuntimeException(
+                'Please authenticate with the Harvest service using the jira:harvest-login command.'
+            );
+        }
+        $client = new Client();
+
+        $client->authenticate(
+            $datastore['account-id'],
+            $datastore['token']
+        );
+
+        return $client;
     }
 }

@@ -15,6 +15,7 @@ use Pr0jectX\Px\ProjectX\Plugin\PluginCommandTaskBase;
 use Pr0jectX\PxJira\Jira;
 use Pr0jectX\PxJira\ProjectX\Plugin\CommandType\JiraCommandType;
 use Psr\Cache\CacheItemInterface;
+use Required\Harvest\Client;
 use Symfony\Component\Console\Question\Question;
 
 class JiraCommand extends PluginCommandTaskBase
@@ -28,6 +29,8 @@ class JiraCommand extends PluginCommandTaskBase
      */
     public function jiraLogin($opts = ['reauthenticate' => false]): void
     {
+        Jira::printDisplayBanner();
+
         try {
             if (!$this->hasJiraAuthDatastoreData() || $opts['reauthenticate']) {
                 $username = $this->doAsk(
@@ -74,6 +77,121 @@ class JiraCommand extends PluginCommandTaskBase
                     sprintf('%s is currently logged in!', $username)
                 );
             }
+        } catch (\Exception $exception) {
+            $this->error($exception->getMessage());
+        }
+    }
+
+    /**
+     * Login to the Harvest service using an personal API token.
+     *
+     * @param array $opts
+     * @option $reauthenticate
+     *   Set if you need to reauthenticate with a different account.
+     */
+    public function jiraHarvestLogin($opts = ['reauthenticate' => false]): void
+    {
+        Jira::printDisplayBanner();
+
+        try {
+            if (!$this->getPlugin()->hasJiraHarvestAuthDatastoreData() || $opts['reauthenticate']) {
+                $accountId = $this->doAsk(
+                    (new Question($this->formatQuestion('Input Harvest account ID')))
+                        ->setValidator(function ($value) {
+                            if (empty($value)) {
+                                throw new \RuntimeException(
+                                    'The Harvest account ID is required!'
+                                );
+                            }
+
+                            return $value;
+                        })
+                );
+                $accountToken = $this->doAsk(
+                    (new Question($this->formatQuestion('Input Harvest API token')))
+                        ->setHidden(true)
+                        ->setValidator(function ($value) {
+                            if (empty($value)) {
+                                throw new \RuntimeException(
+                                    'The Harvest API token is required!'
+                                );
+                            }
+
+                            return $value;
+                        })
+                );
+                $status = $this->getPlugin()->getJiraHarvestDatastore()
+                    ->write([
+                        'account-id' => $accountId,
+                        'token' => $accountToken
+                    ]);
+
+                if (!$status) {
+                    throw new \RuntimeException(
+                        'Unable to save the Jira Harvest authentication file!'
+                    );
+                }
+            }
+
+            if ($user = $this->getJiraHarvestClient()->currentUser()->show()) {
+                $this->success(
+                    sprintf('%s %s is currently logged in!', $user['first_name'], $user['last_name'])
+                );
+            }
+        } catch (\Exception $exception) {
+            $this->error($exception->getMessage());
+        }
+    }
+
+    /**
+     * Track time against a Jira ticket using Harvest.
+     *
+     * @param string|null $issueNumber
+     *   The Jira issue number.
+     * @param string|null $harvestTask
+     *   The Harvest task name.
+     *
+     * @throws \Psr\Cache\InvalidArgumentException
+     */
+    public function jiraTrackIssue(
+        string $issueNumber = null,
+        string $harvestTask = null
+    ): void {
+        Jira::printDisplayBanner();
+
+        try {
+            if ($harvestProjectKey = $this->getPlugin()->getJiraHarvestProject()) {
+                $projectInfo = $this->getUserHarvestProjectInfo($harvestProjectKey);
+
+                $issueNumber = $this->chooseProjectUserIssue($issueNumber);
+
+                $harvestTask = $harvestTask ?? $this->askChoice(
+                    'Select the Harvest task to track time for',
+                    array_values($projectInfo['tasks'])
+                );
+                $harvestTaskId = array_search($harvestTask, $projectInfo['tasks']);
+
+                if (!isset($harvestTaskId) || !$harvestTaskId) {
+                    throw new \InvalidArgumentException(
+                        'The Harvest task is invalid!'
+                    );
+                }
+                $this->getJiraHarvestClient()->timeEntries()->create([
+                    'task_id' => $harvestTaskId,
+                    'project_id' => $projectInfo['id'],
+                    'spent_date' => (new \DateTime())->format('c'),
+                    'notes' => $issueNumber,
+                    'external_reference' => [
+                        'permalink' => "{$this->getJiraHost()}/browse/{$issueNumber}"
+                    ]
+                ]);
+                $this->success(
+                    sprintf("%s is successfully being tracked in Harvest!", $issueNumber)
+                );
+            }
+            throw new \RuntimeException(
+                'Please provide a valid Harvest project key using the `config:set jira` command!'
+            );
         } catch (\Exception $exception) {
             $this->error($exception->getMessage());
         }
@@ -287,6 +405,85 @@ class JiraCommand extends PluginCommandTaskBase
         } catch (\Exception $exception) {
             $this->error($exception->getMessage());
         }
+    }
+
+    /**
+     * Get the Jira Harvest API client.
+     */
+    protected function getJiraHarvestClient(): Client
+    {
+        return $this->getPlugin()->jiraHarvestApiClient();
+    }
+
+    /**
+     * Get the user Harvest project information.
+     *
+     * @param string $projectCode
+     *   The harvest project code.
+     *
+     * @return array
+     *   An array of user harvest projects.
+     *
+     * @throws \Psr\Cache\InvalidArgumentException
+     */
+    protected function getUserHarvestProjectInfo(string $projectCode): array
+    {
+        return $this->getUserHarvestProjects()[$projectCode] ?? [];
+    }
+
+    /**
+     * Get the users Harvest projects.
+     *
+     * @return array
+     *   An array of the harvest projects.
+     *
+     * @throws \Psr\Cache\InvalidArgumentException
+     */
+    protected function getUserHarvestProjects(): array
+    {
+        return $this->pluginCache()->get('harvest.projects', function (CacheItemInterface $cacheItem) {
+            $cacheItem->expiresAfter(86400);
+
+            $client = $this->getJiraHarvestClient();
+            $assignments = $client->currentUser()->projectAssignments();
+
+            $projects = [];
+            foreach ($assignments->all() as $assignment) {
+                if (isset($assignment['is_active']) && !$assignment['is_active']) {
+                    continue;
+                }
+                if (
+                    !isset($assignment['project'])
+                    || !isset($assignment['project']['id'])
+                ) {
+                    continue;
+                }
+                $project = $assignment['project'];
+                $projectCode = $project['code'];
+
+                $projects[$projectCode] = [
+                    'client' => $assignment['client']
+                ] + $project;
+
+                $taskAssignments = $assignment['task_assignments'] ?? [];
+
+                foreach ($taskAssignments as $taskAssignment) {
+                    if (
+                        (!isset($taskAssignment['task']) || empty($taskAssignment['task']))
+                        || (isset($taskAssignment['is_active']) && !$taskAssignment['is_active'])
+                    ) {
+                        continue;
+                    }
+                    [
+                        'id' => $taskId,
+                        'name' => $taskName
+                    ] = $taskAssignment['task'];
+
+                    $projects[$projectCode]['tasks'][$taskId] = $taskName;
+                }
+            }
+            return $projects;
+        }) ?? [];
     }
 
     /**

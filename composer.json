@@ -14,7 +14,9 @@
     "require": {
         "php": ">=7.2",
         "pr0ject-x/px": "^1.0.9",
-        "lesstif/php-jira-rest-client": "^2.1"
+        "lesstif/php-jira-rest-client": "^2.1",
+        "wearerequired/harvest-api-php-client": "^0.1.1",
+        "php-http/guzzle6-adapter": "^2.0"
     },
     "require-dev": {
         "squizlabs/php_codesniffer": "^3.5",
